@@ -33,6 +33,7 @@ func demoFlooding() {
 		LogLevel:  core.LevelInfo,
 	})
 	sim.Run()
+	printFloodResult(sim, ids)
 }
 
 func demoFloodingWithNodeFailures() {
@@ -61,6 +62,7 @@ func demoFloodingWithNodeFailures() {
 		},
 	})
 	sim.Run()
+	printFloodResult(sim, ids)
 }
 
 func demoFloodingWithLinkFailures() {
@@ -83,17 +85,24 @@ func demoFloodingWithLinkFailures() {
 		},
 	})
 	sim.Run()
+	printFloodResult(sim, ids)
 }
 
 func demoFloodingWithBothFailures() {
 	printHeader("DEMO 4 — Flooding: 20% node + 30% link failures, variable delay [1, 3]")
 
 	ids := nodeIDs("N0", "N1", "N2", "N3", "N4")
+	graph := topology.New()
+	graph.AddBiEdge("N0", "N1")
+	graph.AddBiEdge("N0", "N2")
+	graph.AddBiEdge("N0", "N4")
+	graph.AddBiEdge("N1", "N3")
+	graph.AddBiEdge("N2", "N3")
 	sim := core.New(core.SimConfig{
 		Nodes:     ids,
-		Topology:  topology.Ring(ids),
+		Topology:  graph,
 		Algorithm: &flooding.Algorithm{Initiator: "N0", Value: "both-fail-demo"},
-		Delay:     &core.SeededDelay{Min: 1, Max: 3},
+		Delay:     &core.FixedDelay{Min: 1, Max: 3},
 		Seed:      99,
 		LogOutput: os.Stdout,
 		LogLevel:  core.LevelInfo,
@@ -106,6 +115,7 @@ func demoFloodingWithBothFailures() {
 		},
 	})
 	sim.Run()
+	printFloodResult(sim, ids)
 }
 
 func demoBatchComparison() {
@@ -171,6 +181,22 @@ func nodeIDs(names ...string) []core.NodeID {
 		ids[i] = core.NodeID(n)
 	}
 	return ids
+}
+
+func printFloodResult(sim *core.Simulator, ids []core.NodeID) {
+	fmt.Println()
+	for _, id := range ids {
+		n := sim.NodeState(id)
+		switch {
+		case n.Status() == core.StatusCrashed:
+			fmt.Printf("  %s  ✗ crashed\n", id)
+		case flooding.Received(sim, id):
+			fmt.Printf("  %s  ✓\n", id)
+		default:
+			fmt.Printf("  %s  ✗ not received\n", id)
+		}
+	}
+	fmt.Println()
 }
 
 func printHeader(title string) {

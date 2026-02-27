@@ -40,7 +40,7 @@ func (e LogEntry) String() string {
 	if node == "" {
 		node = "SIMULATOR"
 	}
-	return fmt.Sprintf("[t=%-4d] %-5s %-14s %-10s %s",
+	return fmt.Sprintf("t=%-4d %-5s %-14s %-10s %s",
 		e.Time, e.Level, e.Kind, node, e.Details)
 }
 
