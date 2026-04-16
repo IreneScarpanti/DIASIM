@@ -7,6 +7,13 @@ import (
 	"sort"
 )
 
+type ExecutionMode string
+
+const (
+	ModeSequential ExecutionMode = "sequential"
+	ModeParallel   ExecutionMode = "parallel"
+)
+
 type FailureConfig struct {
 	NodeFailureRate    float64
 	LinkFailureRate    float64
@@ -25,6 +32,7 @@ type SimConfig struct {
 	LogLevel  Level
 	LogOutput io.Writer
 	BatchSize int
+	Mode      ExecutionMode
 }
 
 type runtimeBuffer struct{ actions []Action }
@@ -194,6 +202,13 @@ func (s *Simulator) pushEvent(e *Event) {
 }
 
 func (s *Simulator) Run() int {
+	if s.cfg.Mode == ModeParallel {
+		return s.runParallel()
+	}
+	return s.runSequential()
+}
+
+func (s *Simulator) runSequential() int {
 	s.log.simStart(s.time, len(s.cfg.Nodes))
 
 	batchSize := s.cfg.BatchSize
@@ -202,7 +217,6 @@ func (s *Simulator) Run() int {
 	}
 
 	for s.queue.Len() > 0 {
-		// All events in the batch must share the same logical timestamp.
 		results := make([]computeResult, 0, batchSize)
 		currentTime := s.queue.Peek().Time
 
