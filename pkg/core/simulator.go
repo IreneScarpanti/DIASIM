@@ -7,6 +7,8 @@ import (
 	"sort"
 )
 
+// ExecutionMode selects between the sequential (default) event loop and the
+// parallel CMB-based engine with barrier synchronization.
 type ExecutionMode string
 
 const (
@@ -29,10 +31,22 @@ type SimConfig struct {
 	Delay     DelayModel
 	Seed      int64
 	Failures  *FailureConfig
-	LogLevel  Level
-	LogOutput io.Writer
-	BatchSize int
-	Mode      ExecutionMode
+	Byzantine *ByzantineConfig
+	// ScheduledCrashes maps node IDs to the logical time at which they
+	// permanently crash. Used for deterministic failure injection in benchmarks.
+	ScheduledCrashes map[NodeID]int64
+	// ScheduledRecoveries maps node IDs to the logical time at which they
+	// recover from a crash. Used with ScheduledCrashes for temporary failures.
+	ScheduledRecoveries map[NodeID]int64
+	LogLevel            Level
+	LogOutput           io.Writer
+	BatchSize           int
+	Mode                ExecutionMode
+	// MaxSteps limits the total number of events processed. If > 0, the
+	// simulation stops after this many steps even if events remain.
+	// Used to prevent non-terminating simulations (e.g. flooding ACK
+	// retrying forever under Byzantine failures).
+	MaxSteps int
 }
 
 type runtimeBuffer struct{ actions []Action }
@@ -124,6 +138,18 @@ func New(cfg SimConfig) *Simulator {
 		s.scheduleProbabilisticFailures(cfg.Failures)
 	}
 
+	if cfg.Byzantine != nil {
+		s.markByzantineNodes(cfg.Byzantine)
+	}
+
+	for id, crashAt := range cfg.ScheduledCrashes {
+		s.pushEvent(&Event{Time: crashAt, Type: EventCrash, NodeID: id})
+	}
+
+	for id, recoverAt := range cfg.ScheduledRecoveries {
+		s.pushEvent(&Event{Time: recoverAt, Type: EventNodeRecover, NodeID: id})
+	}
+
 	return s
 }
 
@@ -195,12 +221,44 @@ func (s *Simulator) scheduleProbabilisticFailures(fc *FailureConfig) {
 	}
 }
 
+func (s *Simulator) markByzantineNodes(bc *ByzantineConfig) {
+	if len(bc.FixedByzantineNodes) > 0 {
+		for _, id := range bc.FixedByzantineNodes {
+			if n, ok := s.nodes[id]; ok {
+				n.SetByzantine(true)
+				s.log.nodeByzantine(0, id)
+			}
+		}
+		return
+	}
+
+	if bc.ByzantineNodeRate <= 0 {
+		return
+	}
+
+	ids := make([]NodeID, len(s.cfg.Nodes))
+	copy(ids, s.cfg.Nodes)
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	s.rng.Shuffle(len(ids), func(i, j int) { ids[i], ids[j] = ids[j], ids[i] })
+
+	count := int(float64(len(ids)) * bc.ByzantineNodeRate)
+	for i := 0; i < count; i++ {
+		if n, ok := s.nodes[ids[i]]; ok {
+			n.SetByzantine(true)
+			s.log.nodeByzantine(0, ids[i])
+		}
+	}
+}
+
 func (s *Simulator) pushEvent(e *Event) {
 	s.seqGen++
 	e.SeqNum = s.seqGen
 	s.queue.Push(e)
 }
 
+// Run executes the simulation using the configured execution mode.
+// In sequential mode (default) it uses the original single-threaded event loop.
+// In parallel mode it uses the CMB-based engine with barrier synchronization.
 func (s *Simulator) Run() int {
 	if s.cfg.Mode == ModeParallel {
 		return s.runParallel()
@@ -208,6 +266,7 @@ func (s *Simulator) Run() int {
 	return s.runSequential()
 }
 
+// runSequential is the original single-threaded event loop (unchanged).
 func (s *Simulator) runSequential() int {
 	s.log.simStart(s.time, len(s.cfg.Nodes))
 
@@ -217,6 +276,10 @@ func (s *Simulator) runSequential() int {
 	}
 
 	for s.queue.Len() > 0 {
+		if s.cfg.MaxSteps > 0 && s.steps >= s.cfg.MaxSteps {
+			break
+		}
+
 		results := make([]computeResult, 0, batchSize)
 		currentTime := s.queue.Peek().Time
 
@@ -379,7 +442,28 @@ func (s *Simulator) commit(result computeResult) {
 		s.log.timerFire(t, from)
 	}
 
-	for _, a := range result.actions {
+	// Intercept actions from Byzantine nodes.
+	actions := result.actions
+	if from != "" && s.cfg.Byzantine != nil && s.cfg.Byzantine.Adversary != nil {
+		if n := s.nodes[from]; n != nil && n.IsByzantine() {
+			neighbors := s.cfg.Topology.Neighbors(from)
+			var intercepted []Action
+			for _, a := range actions {
+				if a.Type == ActionSend {
+					modified := s.cfg.Byzantine.Adversary.InterceptSend(from, a, neighbors, s.rng)
+					for _, ma := range modified {
+						s.log.byzantineSend(t, from, ma.SendTo, ma.Payload)
+					}
+					intercepted = append(intercepted, modified...)
+				} else {
+					intercepted = append(intercepted, a)
+				}
+			}
+			actions = intercepted
+		}
+	}
+
+	for _, a := range actions {
 		switch a.Type {
 
 		case ActionSend:

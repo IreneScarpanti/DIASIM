@@ -3,16 +3,18 @@ package core
 type NodeStatus string
 
 const (
-	StatusAlive   NodeStatus = "ALIVE"
-	StatusCrashed NodeStatus = "CRASHED"
+	StatusAlive     NodeStatus = "ALIVE"
+	StatusCrashed   NodeStatus = "CRASHED"
+	StatusByzantine NodeStatus = "BYZANTINE"
 )
 
 type Node struct {
-	id       NodeID
-	status   NodeStatus
-	state    map[string]any
-	topology TopologyReader
-	runtime  ActionBuffer
+	id        NodeID
+	status    NodeStatus
+	byzantine bool // true if this node is Byzantine (persists through crashes/recovers)
+	state     map[string]any
+	topology  TopologyReader
+	runtime   ActionBuffer
 }
 
 func NewNode(id NodeID, topo TopologyReader, buf ActionBuffer) *Node {
@@ -30,6 +32,10 @@ func (n *Node) ID() NodeID { return n.id }
 func (n *Node) Status() NodeStatus { return n.status }
 
 func (n *Node) SetStatus(s NodeStatus) { n.status = s }
+
+func (n *Node) IsByzantine() bool { return n.byzantine }
+
+func (n *Node) SetByzantine(b bool) { n.byzantine = b }
 
 func (n *Node) Neighbors() []NodeID { return n.topology.Neighbors(n.id) }
 

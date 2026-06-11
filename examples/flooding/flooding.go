@@ -206,3 +206,30 @@ func Received(sim *core.Simulator, id core.NodeID) bool {
 	v, _ := n.Get(stateReceived)
 	return v == true
 }
+
+// ReceivedValue returns the value received by the node, if any.
+func ReceivedValue(sim *core.Simulator, id core.NodeID) (any, bool) {
+	n := sim.NodeState(id)
+	if n == nil {
+		return nil, false
+	}
+	v, ok := n.Get(stateValue)
+	return v, ok
+}
+
+// CountCorrectDeliveries returns how many non-crashed, non-Byzantine nodes
+// received the correct value.
+func CountCorrectDeliveries(sim *core.Simulator, ids []core.NodeID, expectedValue any) (delivered, total int) {
+	for _, id := range ids {
+		n := sim.NodeState(id)
+		if n == nil || n.Status() == core.StatusCrashed || n.IsByzantine() {
+			continue
+		}
+		total++
+		v, ok := n.Get(stateValue)
+		if ok && v == expectedValue {
+			delivered++
+		}
+	}
+	return
+}

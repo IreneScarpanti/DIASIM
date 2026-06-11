@@ -131,3 +131,12 @@ func (l *Logger) linkRecover(t int64, from, to NodeID) {
 	l.log(LogEntry{t, LevelInfo, "LINK_RECOVER", "",
 		fmt.Sprintf("link=%s->%s recovered", from, to)})
 }
+
+func (l *Logger) nodeByzantine(t int64, id NodeID) {
+	l.log(LogEntry{t, LevelWarn, "NODE_BYZANTINE", id, "node marked as Byzantine"})
+}
+
+func (l *Logger) byzantineSend(t int64, from, to NodeID, payload any) {
+	l.log(LogEntry{t, LevelWarn, "BYZ_SEND", from,
+		fmt.Sprintf("to=%s payload=%v (adversary-controlled)", to, payload)})
+}

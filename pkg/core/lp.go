@@ -2,6 +2,7 @@ package core
 
 import (
 	"math"
+	"math/rand"
 	"sync"
 )
 
@@ -65,6 +66,10 @@ type LogicalProcess struct {
 	reportCh chan<- lpReport // LP → coordinator: local LBTS contribution
 	lbtsCh   <-chan int64    // coordinator → LP: computed global LBTS
 	doneCh   chan<- struct{} // LP → coordinator: cycle processing complete
+
+	// Byzantine support.
+	adversary ByzantineAdversary
+	rng       *rand.Rand
 
 	// stepCount tracks how many events this LP processed (for global total).
 	stepCount int
@@ -268,6 +273,24 @@ func (lp *LogicalProcess) processEvent(ev *Event) {
 //     destination LP at the start of the next barrier cycle (drainInbox).
 //   - ActionSetTimer: inserts a tick event directly into this LP's local queue.
 func (lp *LogicalProcess) applyActions(actions []Action) {
+	// Intercept actions from Byzantine nodes.
+	if lp.node.IsByzantine() && lp.adversary != nil {
+		neighbors := lp.topo.Neighbors(lp.id)
+		var intercepted []Action
+		for _, a := range actions {
+			if a.Type == ActionSend {
+				modified := lp.adversary.InterceptSend(lp.id, a, neighbors, lp.rng)
+				for _, ma := range modified {
+					lp.log.byzantineSend(lp.clock, lp.id, ma.SendTo, ma.Payload)
+				}
+				intercepted = append(intercepted, modified...)
+			} else {
+				intercepted = append(intercepted, a)
+			}
+		}
+		actions = intercepted
+	}
+
 	for _, a := range actions {
 		switch a.Type {
 

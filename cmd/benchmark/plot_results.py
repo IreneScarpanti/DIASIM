@@ -1,19 +1,7 @@
-#!/usr/bin/env python3
-"""
-Generate benchmark plots for DIASIM — three experiments:
-  Exp 1: Flooding (varying nodes)         → when does parallel NOT help?
-  Exp 2: Raft (varying nodes, 100 values) → when does parallel help, and where does it plateau?
-  Exp 3: Raft (100 nodes, varying values) → what is the crossover point?
-
-Produces a 2x3 grid:
-  Top row:    Exp1 wall time | Exp2 wall time | Exp3 wall time
-  Bottom row: Exp1 speedup   | Exp2 speedup   | Exp3 speedup
-"""
 
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
-import numpy as np
 import sys
 import os
 
@@ -70,7 +58,7 @@ def plot_speedup(ax, grp_df, x_col, title, xlabel):
 
 
 def main():
-    csv_path = sys.argv[1] if len(sys.argv) > 1 else "benchmark_results.csv"
+    csv_path = sys.argv[1] if len(sys.argv) > 1 else "cmd/benchmark/benchmark_results.csv"
     if not os.path.exists(csv_path):
         print(f"File not found: {csv_path}")
         sys.exit(1)
@@ -107,7 +95,7 @@ def main():
                  "Exp 3: Raft — Speedup vs Values", "Number of values")
 
     plt.tight_layout(rect=[0, 0, 1, 0.92])
-    out_path = "benchmark_plots.png"
+    out_path = "cmd/benchmark/benchmark_plots.png"
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     print(f"Plots saved to {out_path}")
     plt.close()
