@@ -1,20 +1,3 @@
-// Package raft implements a simplified version of the Raft consensus algorithm
-// for the DIASIM simulator.
-//
-// This implementation covers leader election and log replication (the two core
-// subproblems of Raft) without membership changes or log compaction. It follows
-// the Raft Lite pseudocode (Liangrun Da / Martin Kleppmann) adapted to DIASIM's
-// Algorithm interface (OnStart / OnMessage / OnTick).
-//
-// Timer management: DIASIM provides a single OnTick callback. We use two timer
-// durations to distinguish election timeouts from replication heartbeats:
-//   - Election timeout:    electionBaseInterval + (node index * 2) to stagger
-//   - Replication timeout: replicationInterval (shorter, leader-only)
-//
-// Client requests: a configurable set of client values are injected by the
-// designated initiator node at OnStart time. The leader appends them to its log
-// and replicates to followers. Values are "committed" (delivered) when a majority
-// of nodes acknowledge them.
 package raft
 
 import (
@@ -23,12 +6,12 @@ import (
 	"diasim/pkg/core"
 )
 
-// ── Timer intervals (in logical time units) ──────────────────────────────────
+// ── Timer intervals ──────────────────────────────────────────────────────────
 
 const (
-	electionBaseInterval = 15 // base election timeout (staggered per node)
-	electionJitter       = 2  // multiplier for node index staggering
-	replicationInterval  = 5  // heartbeat / log replication interval
+	electionBaseInterval = 15
+	electionJitter       = 2
+	replicationInterval  = 5
 )
 
 // ── Roles ────────────────────────────────────────────────────────────────────
@@ -50,25 +33,21 @@ const (
 	kindVoteResponse msgKind = "VOTE_RESP"
 	kindLogRequest   msgKind = "LOG_REQ"
 	kindLogResponse  msgKind = "LOG_RESP"
-	kindForward      msgKind = "FORWARD" // forward client request to leader
+	kindForward      msgKind = "FORWARD"
 )
 
-// Msg is the payload carried in all inter-node messages.
 type Msg struct {
 	Kind msgKind
 
-	// VoteRequest fields
 	CandidateID core.NodeID
 	CTerm       int64
 	CLogLength  int
 	CLogTerm    int64
 
-	// VoteResponse fields
 	VoterID core.NodeID
 	VTerm   int64
 	Granted bool
 
-	// LogRequest fields
 	LeaderID     core.NodeID
 	LTerm        int64
 	PrefixLen    int
@@ -76,13 +55,11 @@ type Msg struct {
 	LeaderCommit int
 	Suffix       []LogEntry
 
-	// LogResponse fields
 	FollowerID core.NodeID
 	FTerm      int64
 	Ack        int
 	Success    bool
 
-	// Forward fields
 	ForwardValue any
 }
 
@@ -103,7 +80,6 @@ func (m Msg) String() string {
 	}
 }
 
-// LogEntry represents a single entry in the replicated log.
 type LogEntry struct {
 	Term  int64
 	Value any
@@ -112,32 +88,28 @@ type LogEntry struct {
 // ── State keys ───────────────────────────────────────────────────────────────
 
 const (
-	sCurrentTerm    = "raft_currentTerm"
-	sVotedFor       = "raft_votedFor"
-	sCurrentRole    = "raft_currentRole"
-	sCurrentLeader  = "raft_currentLeader"
-	sVotesReceived  = "raft_votesReceived"
-	sLog            = "raft_log"
-	sCommitLength   = "raft_commitLength"
-	sSentLength     = "raft_sentLength"
-	sAckedLength    = "raft_ackedLength"
-	sNodeIndex      = "raft_nodeIndex"
-	sDelivered      = "raft_delivered" // []any — committed values delivered
-	sAllNodes       = "raft_allNodes"
-	sValuesInjected = "raft_valuesInjected"
-	sLastHeartbeat  = "raft_lastHeartbeat" // logical time of last heartbeat/vote grant
-	sTickCount      = "raft_tickCount"     // number of ticks fired so far
+	sCurrentTerm = "raft_currentTerm"
+	sVotedFor    = "raft_votedFor"
+	sCurrentRole = "raft_currentRole"
+	// sCurrentLeader: l'ID del leader che il nodo riconosce nel term corrente.
+	sCurrentLeader   = "raft_currentLeader"
+	sVotesReceived   = "raft_votesReceived"
+	sLog             = "raft_log"
+	sCommitLength    = "raft_commitLength"
+	sSentLength      = "raft_sentLength"
+	sAckedLength     = "raft_ackedLength"
+	sNodeIndex       = "raft_nodeIndex"
+	sDelivered       = "raft_delivered"
+	sAllNodes        = "raft_allNodes"
+	sLastHeartbeat   = "raft_lastHeartbeat"
+	sTickCount       = "raft_tickCount"
+	sLastKnownLeader = "raft_lastKnownLeader"
 )
 
 // ── Algorithm ────────────────────────────────────────────────────────────────
 
-// Algorithm implements the DIASIM Algorithm interface for simplified Raft.
 type Algorithm struct {
-	// Values is the list of client values to be proposed. The Initiator node
-	// injects these into the Raft log via the leader.
-	Values []any
-
-	// Initiator is the node that proposes client values at startup.
+	Values    []any
 	Initiator core.NodeID
 }
 
@@ -145,7 +117,6 @@ func (a *Algorithm) OnStart(n *core.Node) {
 	neighbors := n.Neighbors()
 	allNodes := append([]core.NodeID{n.ID()}, neighbors...)
 
-	// Compute a stable node index for election timeout staggering.
 	nodeIndex := 0
 	for _, nb := range neighbors {
 		if nb < n.ID() {
@@ -165,13 +136,10 @@ func (a *Algorithm) OnStart(n *core.Node) {
 	n.Set(sNodeIndex, nodeIndex)
 	n.Set(sDelivered, []any{})
 	n.Set(sAllNodes, allNodes)
-	n.Set(sValuesInjected, false)
 	n.Set(sLastHeartbeat, int64(0))
 	n.Set(sTickCount, int64(0))
+	n.Set(sLastKnownLeader, core.NodeID("")) // FIX #3
 
-	// Single recurring tick. The tick interval is the replication interval.
-	// Election timeout is checked by comparing tick count against a per-node
-	// threshold derived from nodeIndex.
 	n.SetTimer(replicationInterval)
 }
 
@@ -197,7 +165,7 @@ func (a *Algorithm) OnMessage(n *core.Node, msg core.Message) {
 
 func (a *Algorithm) OnTick(n *core.Node) {
 	if a.isDone(n) {
-		return // stop ticking when all values committed
+		return
 	}
 
 	tickCount := getTickCount(n) + 1
@@ -206,13 +174,10 @@ func (a *Algorithm) OnTick(n *core.Node) {
 	currentRole := getRole(n)
 
 	if currentRole == roleLeader {
-		// Leader: replicate log / send heartbeats.
 		for _, nb := range n.Neighbors() {
 			a.replicateLog(n, nb)
 		}
 	} else {
-		// Follower or candidate: check if election timeout has elapsed.
-		// Each node has a different threshold based on its index.
 		nodeIndex, _ := n.Get(sNodeIndex)
 		idx, _ := nodeIndex.(int)
 		electionTicks := int64(electionBaseInterval/replicationInterval) + int64(idx)
@@ -223,7 +188,6 @@ func (a *Algorithm) OnTick(n *core.Node) {
 		}
 	}
 
-	// Schedule next tick.
 	n.SetTimer(replicationInterval)
 }
 
@@ -232,7 +196,6 @@ func (a *Algorithm) OnTick(n *core.Node) {
 func (a *Algorithm) handleElectionTimeout(n *core.Node) {
 	currentRole := getRole(n)
 	if currentRole == roleLeader {
-		// Leaders don't start elections; reset election timer as safety.
 		a.resetElectionTimer(n)
 		return
 	}
@@ -315,7 +278,6 @@ func (a *Algorithm) handleVoteResponse(n *core.Node, msg Msg) {
 		allNodes := getAllNodes(n)
 		majority := (len(allNodes) + 1) / 2
 		if len(votes) >= majority {
-			// Won election — become leader.
 			n.Set(sCurrentRole, roleLeader)
 			n.Set(sCurrentLeader, n.ID())
 
@@ -330,10 +292,8 @@ func (a *Algorithm) handleVoteResponse(n *core.Node, msg Msg) {
 			n.Set(sSentLength, sentLength)
 			n.Set(sAckedLength, ackedLength)
 
-			// Inject client values now that we are leader.
 			a.injectValues(n)
 
-			// Send initial heartbeat / log replication to all followers.
 			for _, nb := range n.Neighbors() {
 				a.replicateLog(n, nb)
 			}
@@ -349,10 +309,17 @@ func (a *Algorithm) handleVoteResponse(n *core.Node, msg Msg) {
 // ── Broadcast / Forward ──────────────────────────────────────────────────────
 
 func (a *Algorithm) handleForward(n *core.Node, msg Msg) {
-	if getRole(n) == roleLeader {
-		a.appendAndReplicate(n, msg.ForwardValue)
+	if getRole(n) != roleLeader {
+		return
 	}
-	// If not leader, drop — the sender will retry via election.
+	// Dedup: controlla se il valore è già presente nel log.
+	log := getLog(n)
+	for _, entry := range log {
+		if entry.Value == msg.ForwardValue {
+			return
+		}
+	}
+	a.appendAndReplicate(n, msg.ForwardValue)
 }
 
 func (a *Algorithm) appendAndReplicate(n *core.Node, value any) {
@@ -370,18 +337,27 @@ func (a *Algorithm) appendAndReplicate(n *core.Node, value any) {
 	}
 }
 
+// injectValues: chiamato quando l'initiator vince l'elezione e diventa leader.
+// Aggiunge al log i valori non ancora presenti (dedup per evitare duplicati
+// nel caso in cui l'initiator avesse già fatto forward in un term precedente).
 func (a *Algorithm) injectValues(n *core.Node) {
 	if n.ID() != a.Initiator {
 		return
 	}
-	injected, _ := n.Get(sValuesInjected)
-	if injected == true {
-		return
-	}
-	n.Set(sValuesInjected, true)
+	// Segna il leader corrente come noto, così handleLogRequest non rimanderà
+	// i valori a sé stessi se l'initiator riceverà un proprio LOG_REQ.
+	n.Set(sLastKnownLeader, n.ID())
 
+	// Dedup: aggiungi solo i valori non ancora nel log.
+	log := getLog(n)
+	existing := make(map[interface{}]bool, len(log))
+	for _, entry := range log {
+		existing[entry.Value] = true
+	}
 	for _, v := range a.Values {
-		a.appendAndReplicate(n, v)
+		if !existing[v] {
+			a.appendAndReplicate(n, v)
+		}
 	}
 }
 
@@ -416,6 +392,8 @@ func (a *Algorithm) replicateLog(n *core.Node, followerID core.NodeID) {
 
 // ── LogRequest ───────────────────────────────────────────────────────────────
 
+// FIX #3 (parte follower): l'initiator riinvia i valori non committati ogni
+// volta che scopre un leader diverso dall'ultimo a cui ha già fatto forward.
 func (a *Algorithm) handleLogRequest(n *core.Node, msg Msg) {
 	currentTerm := getTerm(n)
 
@@ -431,14 +409,18 @@ func (a *Algorithm) handleLogRequest(n *core.Node, msg Msg) {
 		n.Set(sCurrentLeader, msg.LeaderID)
 		a.resetElectionTimer(n)
 
-		// If we just discovered the leader and we are the initiator without
-		// injected values, forward them.
+		// FIX #3: usa sLastKnownLeader invece del flag booleano sValuesInjected.
+		// Se il nodo initiator rileva un cambio di leader, rispedisce i valori
+		// non ancora committati. La dedup in handleForward impedisce duplicati.
 		if n.ID() == a.Initiator {
-			injected, _ := n.Get(sValuesInjected)
-			if injected != true {
-				n.Set(sValuesInjected, true)
-				for _, v := range a.Values {
-					n.Send(msg.LeaderID, Msg{Kind: kindForward, ForwardValue: v})
+			lastLeader := getNodeID(n, sLastKnownLeader)
+			if lastLeader != msg.LeaderID {
+				n.Set(sLastKnownLeader, msg.LeaderID)
+				commitLength := getCommitLength(n)
+				if commitLength < len(a.Values) {
+					for _, v := range a.Values[commitLength:] {
+						n.Send(msg.LeaderID, Msg{Kind: kindForward, ForwardValue: v})
+					}
 				}
 			}
 		}
@@ -537,7 +519,6 @@ func (a *Algorithm) commitLogEntries(n *core.Node) {
 	log := getLog(n)
 	currentTerm := getTerm(n)
 
-	// Find the largest log index acknowledged by a majority.
 	readyMax := 0
 	for i := commitLength + 1; i <= len(log); i++ {
 		count := 0
@@ -559,15 +540,12 @@ func (a *Algorithm) commitLogEntries(n *core.Node) {
 		n.Set(sDelivered, delivered)
 		n.Set(sCommitLength, readyMax)
 
-		// Replicate again so followers receive the updated leaderCommit.
 		for _, nb := range n.Neighbors() {
 			a.replicateLog(n, nb)
 		}
 	}
 }
 
-// isDone returns true if this node has committed all expected values,
-// meaning the simulation can stop (no more timers needed).
 func (a *Algorithm) isDone(n *core.Node) bool {
 	delivered := getDelivered(n)
 	return len(delivered) >= len(a.Values) && len(a.Values) > 0
@@ -576,7 +554,6 @@ func (a *Algorithm) isDone(n *core.Node) bool {
 // ── Timer helpers ────────────────────────────────────────────────────────────
 
 func (a *Algorithm) resetElectionTimer(n *core.Node) {
-	// Reset the heartbeat counter so the election timeout doesn't fire.
 	n.Set(sLastHeartbeat, getTickCount(n))
 }
 
@@ -600,6 +577,14 @@ func getRole(n *core.Node) role {
 
 func getVotedFor(n *core.Node) core.NodeID {
 	v, _ := n.Get(sVotedFor)
+	if id, ok := v.(core.NodeID); ok {
+		return id
+	}
+	return ""
+}
+
+func getNodeID(n *core.Node, key string) core.NodeID {
+	v, _ := n.Get(key)
 	if id, ok := v.(core.NodeID); ok {
 		return id
 	}
@@ -678,9 +663,8 @@ func getLastHeartbeat(n *core.Node) int64 {
 	return 0
 }
 
-// ── Verification helpers (used in tests) ─────────────────────────────────────
+// ── Verification helpers ─────────────────────────────────────────────────────
 
-// Committed returns the list of values committed (delivered) by the given node.
 func Committed(sim *core.Simulator, id core.NodeID) []any {
 	n := sim.NodeState(id)
 	if n == nil {
@@ -693,8 +677,6 @@ func Committed(sim *core.Simulator, id core.NodeID) []any {
 	return nil
 }
 
-// AllCommitted returns true if every non-crashed node has committed all
-// expected values in the same order.
 func AllCommitted(sim *core.Simulator, ids []core.NodeID, expected []any) bool {
 	for _, id := range ids {
 		n := sim.NodeState(id)
@@ -714,7 +696,6 @@ func AllCommitted(sim *core.Simulator, ids []core.NodeID, expected []any) bool {
 	return true
 }
 
-// HasLeader returns true if at least one non-crashed node believes it is the leader.
 func HasLeader(sim *core.Simulator, ids []core.NodeID) bool {
 	for _, id := range ids {
 		n := sim.NodeState(id)
@@ -729,7 +710,6 @@ func HasLeader(sim *core.Simulator, ids []core.NodeID) bool {
 	return false
 }
 
-// LeaderID returns the NodeID of the current leader, or "" if none.
 func LeaderID(sim *core.Simulator, ids []core.NodeID) core.NodeID {
 	for _, id := range ids {
 		n := sim.NodeState(id)
