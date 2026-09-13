@@ -1,4 +1,4 @@
-# DIASIM — A Deterministic Simulator for Distributed Algorithms
+# DIASIM: A Deterministic Simulator for Distributed Algorithms
 
 DIASIM is a deterministic, discrete-event simulator for distributed algorithms,
 written in Go as a modular library. Distributed algorithms are expressed as
